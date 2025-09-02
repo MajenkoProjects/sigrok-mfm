@@ -116,6 +116,8 @@ class Decoder(srd.Decoder):
 			'default': '16', 'values': ('16', '32')},
 		{'id': 'data_crc_bits', 'desc': 'Data field CRC bits',
 			'default': '32', 'values': ('16', '32', '56')},
+		{'id': 'crc32_poly', 'desc': 'CRC32 Polynomial',
+			'default': '00A00805'},
 		{'id': 'dsply_pfx', 'desc': 'Display all MFM prefix bytes',
 			'default': 'no', 'values': ('yes', 'no')},
 		{'id': 'dsply_sn', 'desc': 'Display sample numbers',
@@ -262,6 +264,7 @@ class Decoder(srd.Decoder):
 		self.write_data = True if self.options['write_data'] == 'yes' else False
 		self.header_crc_bytes = int(self.options['header_crc_bits']) / 8
 		self.data_crc_bytes = int(self.options['data_crc_bits']) / 8
+		self.crc32_poly = int(self.options['crc32_poly'], 16)
 
 		# Calculate number of samples in 30 usec.
 
@@ -339,12 +342,13 @@ class Decoder(srd.Decoder):
 	# ------------------------------------------------------------------------
 
 	def update_crc32(self, byte):
-		self.crc32_accum ^= byte
+		self.crc32_accum = (self.crc32_accum ^ (byte << 24)) & 0xFFFFFFFF
 		for i in range(8):
-			odd = self.crc32_accum % 1
-			self.crc32_accum >>= 1
-			if odd:
-				self.crc32_accum ^= 0x140a0445
+			if (self.crc32_accum & 0x80000000) == 0x80000000:
+				self.crc32_accum = ((self.crc32_accum << 1) ^ self.crc32_poly) & 0xFFFFFFFF
+			else:
+				self.crc32_accum = (self.crc32_accum << 1) & 0xFFFFFFFF
+
 
 	def update_crc56(self, byt):
 		pass
@@ -500,6 +504,11 @@ class Decoder(srd.Decoder):
 
 		self.byte_end = bit_end
 
+	def crc(self, val):
+		self.update_crc(val)   
+		self.update_crc32(val) 
+		self.update_crc56(val) 
+
 	# ------------------------------------------------------------------------
 	# PURPOSE: Display annotations for one byte and its 8 bits and 16 windows.
 	# NOTES:
@@ -513,12 +522,6 @@ class Decoder(srd.Decoder):
 	# ------------------------------------------------------------------------
 
 	def display_byte(self, val, spclk):
-
-		# Update the CRC accumulators.
-
-		self.update_crc(val)
-		self.update_crc32(val)
-		self.update_crc56(val)
 
 		# Display annotations for windows and bits of this byte.
 
@@ -632,6 +635,7 @@ class Decoder(srd.Decoder):
 			self.display_byte(0x00, False)
 			self.iniz_crc()
 			self.display_byte(0xFE, True)
+			self.crc(0xFE)
 			self.field_start = self.byte_start
 			self.display_field('i')
 			self.IDlastAM = self.field_start
@@ -645,6 +649,7 @@ class Decoder(srd.Decoder):
 			self.iniz_crc()
 			self.DRmark = (val & 0x0FF)
 			self.display_byte(self.DRmark, True)
+			self.crc(self.DRmark)
 			self.field_start = self.byte_start
 			self.display_field('d')
 			if self.IDlastAM > 0 \
@@ -658,6 +663,7 @@ class Decoder(srd.Decoder):
 
 		if self.pb_state == 1:				  # process ID Record byte
 			self.display_byte(val, False)
+			self.crc(val)
 			self.decode_id_rec(self.byte_cnt, val)
 			self.byte_cnt -= 1
 			if self.byte_cnt == 0:
@@ -668,6 +674,7 @@ class Decoder(srd.Decoder):
 
 		elif self.pb_state == 2:				# process Data Record byte
 			self.display_byte(val, False)
+			self.crc(val)
 			self.DRsec[self.sector_len - self.byte_cnt] = val
 			self.byte_cnt -= 1
 			if self.byte_cnt == 0:
@@ -678,6 +685,7 @@ class Decoder(srd.Decoder):
 
 		elif self.pb_state == 3:				# process ID record CRC byte
 			self.display_byte(val, False)
+			self.crc(val)
 			self.IDcrc <<= 8
 			self.IDcrc += val
 			self.byte_cnt -= 1
@@ -693,6 +701,7 @@ class Decoder(srd.Decoder):
 
 		elif self.pb_state == 4:				# process Data record CRC byte
 			self.display_byte(val, False)
+			self.crc(val)
 			self.DRcrc <<= 8
 			self.DRcrc += val
 			self.byte_cnt -= 1
@@ -746,6 +755,7 @@ class Decoder(srd.Decoder):
 			self.display_byte(0x00, False)
 			self.iniz_crc()
 			self.display_byte(0xA1, True)
+			self.crc(0xA1)
 			self.field_start = self.byte_start
 			if self.fdd:						# dynamic A1h prefix count
 				self.pb_state = 4
@@ -756,6 +766,7 @@ class Decoder(srd.Decoder):
 		if self.pb_state == 1:				  # second mC2h prefix
 			if val == 0x2C2:
 				self.display_byte(0xC2, True)
+				self.crc(0xC2)
 				self.pb_state = 2
 			else:
 				self.err_print('unexpected byte value %02X' % val, self.byte_end)
@@ -765,6 +776,7 @@ class Decoder(srd.Decoder):
 		elif self.pb_state == 2:				# third mC2h prefix
 			if val == 0x2C2:
 				self.display_byte(0xC2, True)
+				self.crc(0xC2)
 				self.pb_state = 3
 			else:
 				self.err_print('unexpected byte value %02X' % val, self.byte_end)
@@ -774,6 +786,7 @@ class Decoder(srd.Decoder):
 		elif self.pb_state == 3:				# FCh Index Mark
 			if val == 0xFC:
 				self.display_byte(val, False)
+				self.crc(val)
 				self.IM += 1
 				self.display_field('x')
 				self.pb_state = 11
@@ -785,6 +798,7 @@ class Decoder(srd.Decoder):
 		elif self.pb_state == 4:				# second mA1h prefix
 			if val == 0x2A1:
 				self.display_byte(0xA1, True)
+				self.crc(0xA1)
 				self.pb_state = 5
 			else:
 				self.err_print('unexpected byte value %02X' % val, self.byte_end)
@@ -794,6 +808,7 @@ class Decoder(srd.Decoder):
 		elif self.pb_state == 5:				# third mA1h prefix
 			if val == 0x2A1:
 				self.display_byte(0xA1, True)
+				self.crc(0xA1)
 				self.pb_state = 6
 			else:
 				self.err_print('unexpected byte value %02X' % val, self.byte_end)
@@ -803,6 +818,7 @@ class Decoder(srd.Decoder):
 		elif self.pb_state == 6:
 			if val == 0xFE:					 # FEh ID Address Mark
 				self.display_byte(val, False)
+				self.crc(0xFE)
 				self.display_field('i')
 				self.IDlastAM = self.field_start
 				self.IDcrc = 0
@@ -810,6 +826,7 @@ class Decoder(srd.Decoder):
 				self.byte_cnt = 4
 			elif val >= 0xF8 and val <= 0xFB:   # F8h..FBh Data Address Mark
 				self.display_byte(val, False)
+				self.crc(val)
 				self.DRmark = val
 				self.display_field('d')
 				if self.IDlastAM > 0 \
@@ -826,6 +843,7 @@ class Decoder(srd.Decoder):
 
 		elif self.pb_state == 7:				# process ID Record byte
 			self.display_byte(val, False)
+			self.crc(val)
 			self.decode_id_rec(self.byte_cnt, val)
 			self.byte_cnt -= 1
 			if self.byte_cnt == 0:
@@ -836,6 +854,7 @@ class Decoder(srd.Decoder):
 
 		elif self.pb_state == 8:				# process Data Record byte
 			self.display_byte(val, False)
+			self.crc(val)
 			self.DRsec[self.sector_len - self.byte_cnt] = val
 			self.byte_cnt -= 1
 			if self.byte_cnt == 0:
@@ -846,6 +865,7 @@ class Decoder(srd.Decoder):
 
 		elif self.pb_state == 9:				# process ID record CRC byte
 			self.display_byte(val, False)
+			self.crc(val)
 			self.IDcrc <<= 8
 			self.IDcrc += val
 			self.byte_cnt -= 1
@@ -861,6 +881,7 @@ class Decoder(srd.Decoder):
 
 		elif self.pb_state == 10:			   # process Data record CRC byte
 			self.display_byte(val, False)
+			self.crc(val)
 			self.DRcrc <<= 8
 			self.DRcrc += val
 			self.byte_cnt -= 1
