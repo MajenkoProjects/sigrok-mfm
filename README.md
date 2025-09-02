@@ -7,7 +7,7 @@ Original project: https://www.sardis-technologies.com/ufdr/pulseview.htm
 * Ported to support DSView
 * Added support for hard drives
 
-Thanks to **rasz_pl** for the bulk of the work, and the rest of the Twitch chat for helping
+Thanks to [rasz_pl](https://github.com/raszpl) for the bulk of the work, and the rest of the Twitch chat for helping
 crack the troublesome CRC32 problems.
 
 Usage
