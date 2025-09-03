@@ -99,7 +99,6 @@ class Decoder(srd.Decoder):
 		('bytes', 'Bytes', (6,)),
 		('fields', 'Fields', (7, 8, 9, 10,)),
 		('errors', 'Errors', (15,)),
-		('rpts', 'rpt', (11,)),
 	)
 	options = (
 		{'id': 'leading_edge', 'desc': 'Leading edge',
@@ -126,12 +125,6 @@ class Decoder(srd.Decoder):
 			'default': 'no', 'values': ('yes', 'no')},
 		{'id': 'dsply_sn', 'desc': 'Display sample numbers',
 			'default': 'yes', 'values': ('yes', 'no')},
-		{'id': 'rpt_sn', 'desc': 'Sample # to display report',
-			'default': '2111111111'},
-		{'id': 'std_err', 'desc': 'Write errors to stderr',
-			'default': 'no', 'values': ('yes', 'no')},
-		{'id': 'write_data', 'desc': 'Write decoded data to file',
-			'default': 'no', 'values': ('yes', 'no')},
 	)
 
 	# ------------------------------------------------------------------------
@@ -165,9 +158,6 @@ class Decoder(srd.Decoder):
 		self.byte_cnt = 0		   # number of bytes left to process in field (1024/512/256/128/4/2..0)
 		self.dsply_pfx = False	  # True = display all prefix bytes found, False = don't
 		self.dsply_sn = True		# True = display sample number in window annotation, False = don't
-		self.rpt_sn = 0			 # sample number when the summary report is to be produced and displayed
-		self.std_err = False		# True = write error messages to stderr, False = don't
-		self.write_data = False	 # True = write decoded data to binary file, False = don't
 		self.header_crc_bytes = 2   # 16 or 32 bits for data field CRC/ECC
 		self.data_crc_bytes = 4	 # 16, 32 or 56 bits for data field CRC/ECC
 
@@ -255,9 +245,6 @@ class Decoder(srd.Decoder):
 		self.sector_len = int(self.options['sect_len'])
 		self.dsply_pfx = True if self.options['dsply_pfx'] == 'yes' else False
 		self.dsply_sn = True if self.options['dsply_sn'] == 'yes' else False
-		self.rpt_sn = int(self.options['rpt_sn'])
-		self.std_err = True if self.options['std_err'] == 'yes' else False
-		self.write_data = True if self.options['write_data'] == 'yes' else False
 		self.header_crc_bytes = int(self.options['header_crc_bits']) / 8
 		self.data_crc_bytes = int(self.options['data_crc_bits']) / 8
 		self.crc16_poly = int(self.options['crc16_poly'], 16)
@@ -278,34 +265,6 @@ class Decoder(srd.Decoder):
 
 		self.out_ann = self.register(srd.OUTPUT_ANN)
 		self.initial_pins = [1 if self.rising_edge == True else 0]
-
-		# Open the binary output file for decoded data, if enabled.
-
-		if self.write_data:
-			#fpath = os.path.join(os.path.expanduser('~'), 'documents', 'pulseview')  #//DEBUG
-			fpath = "D:/DCW/UFDR/Decode"  #//DEBUG
-			if os.path.exists(fpath):
-				fpath = os.path.join(fpath, 'diskdata.UFD')
-				self.binfile = open(fpath, 'wb')
-				# Write the 16-byte file header.
-				self.binfile.write(pack('<8sB3BL', b'UFDC6-D1', 0x14, 0,0,0, 0))
-			else:
-				self.err_print('folder %s\n	  does not exist, file diskdata.UFD not written' % fpath, -1)
-				self.write_data = False
-
-	# ----------------------------------------------------------------------------
-	# PURPOSE: Write a formatted error message to stderr, if enabled.
-	# IN: msg  error message
-	#	 sn  sample number of beginning of window or bit or field affected,
-	#		  -1 = don't show sample number
-	# ----------------------------------------------------------------------------
-
-	def err_print(self, msg, sn):
-		if self.std_err:
-			if sn < 0:
-				sys.stderr.write('mfm: %s\n' % msg)
-			else:
-				sys.stderr.write('mfm: %s at s%d\n' % (msg, sn))
 
 	# ------------------------------------------------------------------------
 	# PURPOSE: Initialize the CRC accumulator.
@@ -427,7 +386,6 @@ class Decoder(srd.Decoder):
 			if bitn > 0:
 				if self.dsply_sn:
 					if win_val > 1:
-						self.err_print('extra pulse in window', win_start)
 						self.put(win_end - 1, win_end, self.out_ann, [15, ['Err']])
 						self.put(win_start, win_end, self.out_ann,
 								[0, ['%d d (extra pulse in win) s%d' % (win_val, win_start), '%d' % win_val]])
@@ -436,7 +394,6 @@ class Decoder(srd.Decoder):
 								[3, ['%d d s%d' % (win_val, win_start), '%d' % win_val]])
 				else:
 					if win_val > 1:
-						self.err_print('extra pulse in window', win_start)
 						self.put(win_end - 1, win_end, self.out_ann, [15, ['Err']])
 						self.put(win_start, win_end, self.out_ann,
 								[0, ['%d d (extra pulse in win)' % win_val, '%d' % win_val]])
@@ -454,7 +411,6 @@ class Decoder(srd.Decoder):
 				if ((not self.encodingFM) and (shift3 == 0 or shift3 == 3 or shift3 == 6 or shift3 == 7)) \
 				 or (	self.encodingFM  and (shift3 == 0 or shift3 == 1 or shift3 == 4 or shift3 == 5)):
 					if not spclk:
-						self.err_print('clock error for bit', bit_start)
 						self.put(bit_end - 1, bit_end, self.out_ann, [15, ['Err']])
 						self.CkEr += 1
 					self.put(bit_start, bit_end, self.out_ann, [4, ['%d (clock error)' % bit_val, '%d' % bit_val]])
@@ -476,7 +432,6 @@ class Decoder(srd.Decoder):
 
 			if self.dsply_sn:
 				if win_val > 1:
-					self.err_print('extra pulse in window', win_start)
 					self.put(win_end - 1, win_end, self.out_ann, [15, ['Err']])
 					self.put(win_start, win_end, self.out_ann,
 							 [0, ['%d c (extra pulse in win) s%d' % (win_val, win_start), '%d' % win_val]])
@@ -485,7 +440,6 @@ class Decoder(srd.Decoder):
 							 [2, ['%d c s%d' % (win_val, win_start), '%d' % win_val]])
 			else:
 				if win_val > 1:
-					self.err_print('extra pulse in window', win_start)
 					self.put(win_end - 1, win_end, self.out_ann, [15, ['Err']])
 					self.put(win_start, win_end, self.out_ann,
 							 [0, ['%d c (extra pulse in win)' % win_val, '%d' % win_val]])
@@ -564,7 +518,6 @@ class Decoder(srd.Decoder):
 			self.put(self.field_start, self.byte_end, self.out_ann,
 					 [8, ['Data Record', 'Drec', 'R']])
 		elif typ == 'e':
-			self.err_print('CRC error', self.field_start)
 			self.put(self.byte_end - 1, self.byte_end, self.out_ann, [15, ['Err']])
 			self.put(self.field_start, self.byte_end, self.out_ann,
 					 [9, ['CRC error %02X' % self.crc16_accum or self.crc32_accum or self.crc56_accum, 'CRC error', 'CRC', 'C']])
@@ -712,7 +665,6 @@ class Decoder(srd.Decoder):
 				else:
 					self.CRC_err += 1
 					self.display_field('e')
-				self.write_sector()
 				self.pb_state = 5
 
 		elif self.pb_state == 5:				# process first gap byte after CRC or Index Mark
@@ -768,7 +720,6 @@ class Decoder(srd.Decoder):
 				self.crc(0xC2)
 				self.pb_state = 2
 			else:
-				self.err_print('unexpected byte value %02X' % val, self.byte_end)
 				self.put(self.byte_end - 1, self.byte_end, self.out_ann, [15, ['Err']])
 				return -1
 
@@ -778,7 +729,6 @@ class Decoder(srd.Decoder):
 				self.crc(0xC2)
 				self.pb_state = 3
 			else:
-				self.err_print('unexpected byte value %02X' % val, self.byte_end)
 				self.put(self.byte_end - 1, self.byte_end, self.out_ann, [15, ['Err']])
 				return -1
 
@@ -790,7 +740,6 @@ class Decoder(srd.Decoder):
 				self.display_field('x')
 				self.pb_state = 11
 			else:
-				self.err_print('unexpected byte value %02X' % val, self.byte_end)
 				self.put(self.byte_end - 1, self.byte_end, self.out_ann, [15, ['Err']])
 				return -1
 				
@@ -800,7 +749,6 @@ class Decoder(srd.Decoder):
 				self.crc(0xA1)
 				self.pb_state = 5
 			else:
-				self.err_print('unexpected byte value %02X' % val, self.byte_end)
 				self.put(self.byte_end - 1, self.byte_end, self.out_ann, [15, ['Err']])
 				return -1
 
@@ -810,7 +758,6 @@ class Decoder(srd.Decoder):
 				self.crc(0xA1)
 				self.pb_state = 6
 			else:
-				self.err_print('unexpected byte value %02X' % val, self.byte_end)
 				self.put(self.byte_end - 1, self.byte_end, self.out_ann, [15, ['Err']])
 				return -1
 
@@ -836,7 +783,6 @@ class Decoder(srd.Decoder):
 				self.pb_state = 8
 				self.byte_cnt = self.sector_len
 			else:
-				self.err_print('unexpected byte value %02X' % val, self.byte_end)
 				self.put(self.byte_end - 1, self.byte_end, self.out_ann, [15, ['Err']])
 				return -1
 
@@ -909,7 +855,6 @@ class Decoder(srd.Decoder):
 					else:
 						self.CRC_err += 1
 						self.display_field('e')
-				self.write_sector()
 				self.pb_state = 11
 
 		elif self.pb_state == 11:			   # process first gap byte after CRC or Index Mark
@@ -929,65 +874,8 @@ class Decoder(srd.Decoder):
 	#		the cylinder and side numbers from the ID Record.
 	# ------------------------------------------------------------------------
 
-	def write_sector(self):
-
-		if self.IDlastAM > 0 and self.write_data:
-			
-			# Write the 16-byte sector header.
-
-			if self.data_crc_bits == 16:
-				self.binfile.write(pack('<HBBHBBBBHBBH',
-										0x7777, self.IDcyl, self.IDsid, self.sector_len,
-										self.IDcyl, self.IDsid, self.IDsec, self.IDlenc, self.IDcrc,
-										self.DRmark, 0x01 if self.DRcrcok else 0x00, self.DRcrc))
-			elif self.data_crc_bits == 32:
-				self.binfile.write(pack('<HBBHBBBBHBBI',
-										0x7777, self.IDcyl, self.IDsid, self.sector_len,
-										self.IDcyl, self.IDsid, self.IDsec, self.IDlenc, self.IDcrc,
-										self.DRmark, 0x01 if self.DRcrcok else 0x00, self.DRcrc))
-			elif self.data_crc_bits == 56:
-				self.binfile.write(pack('<HBBHBBBBHBBQ',
-										0x7777, self.IDcyl, self.IDsid, self.sector_len,
-										self.IDcyl, self.IDsid, self.IDsec, self.IDlenc, self.IDcrc,
-										self.DRmark, 0x01 if self.DRcrcok else 0x00, self.DRcrc))
-
-			# Write the sector data.
-
-			if self.sector_len == 128:
-				self.DRsec[:128].tofile(self.binfile)
-			elif self.sector_len == 256:
-				self.DRsec[:256].tofile(self.binfile)
-			elif self.sector_len == 512:
-				self.DRsec[:512].tofile(self.binfile)
-			elif self.sector_len == 1024:
-				self.DRsec.tofile(self.binfile)
-			
-			self.binfile.flush()
-
-		self.IDlastAM = -1
-
-	# ------------------------------------------------------------------------
-	# PURPOSE: Display final summary report on last annotation row.
-	# ------------------------------------------------------------------------
-
-	def display_report(self):
-		if not self.report_displayed:
-			self.put(0, self.samplenum, self.out_ann,
-					 [11, ["Summary report:  IM=%d, IDR=%d, DR=%d, CRC_OK=%d, " \
-						   "CRC_err=%d, EiPW=%d, CkEr=%d, OoTI=%d/%d" \
-							% (self.IM, self.IDR, self.DR, self.CRC_OK, self.CRC_err, \
-							self.EiPW, self.CkEr, self.OoTI, self.Intrvls)]])
-			self.report_displayed = True
-
-	# ------------------------------------------------------------------------
-	# PURPOSE: Handle processing when end-of-data reached.
-	# NOTES:
-	#  - PulseView doesn't call this optional method yet.
-	# ------------------------------------------------------------------------
-
 	def decode_end(self):
-		self.err_print('decode_end() called', self.samplenum)
-		self.display_report()
+		pass
 
 	# ------------------------------------------------------------------------
 	# PURPOSE: Main protocol decoding loop.
@@ -1052,9 +940,6 @@ class Decoder(srd.Decoder):
 			# Display summary report on last annotation row.  Reporting
 			# sample number must be on or before last leading edge.
 
-			if self.samplenum >= self.rpt_sn:
-				self.display_report()
-
 			# Calculate interval since previous leading edge.
 
 			last_interval = interval
@@ -1079,7 +964,6 @@ class Decoder(srd.Decoder):
 
 			if interval == 2 and last_interval == 2:
 				self.err_print("'0010101' pattern detected", self.samplenum)
-				self.display_report()
 
 			# Update averaged half-bit-cell window size if interval within tolerance.
 			# Also display leading-edge to leading-edge annotation, showing starting
