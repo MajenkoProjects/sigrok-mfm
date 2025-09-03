@@ -113,6 +113,8 @@ class Decoder(srd.Decoder):
 			'default': 'HDD', 'values': ('FDD', 'HDD')},
 		{'id': 'sect_len', 'desc': 'Sector length',
 			'default': '512', 'values': ('128', '256', '512', '1024')},
+		{'id': 'header_bytes', 'desc': 'Header bytes',
+			'default': '8', 'values': ('7', '8')},
 		{'id': 'header_crc_bits', 'desc': 'Header field CRC bits',
 			'default': '16', 'values': ('16', '32')},
 		{'id': 'data_crc_bits', 'desc': 'Data field CRC bits',
@@ -159,6 +161,7 @@ class Decoder(srd.Decoder):
 		self.dsply_pfx = False	  # True = display all prefix bytes found, False = don't
 		self.dsply_sn = True		# True = display sample number in window annotation, False = don't
 		self.header_crc_bytes = 2   # 16 or 32 bits for data field CRC/ECC
+		self.block_header_byte = 0 # Byte used to indicate the start of a block
 		self.data_crc_bytes = 4	 # 16, 32 or 56 bits for data field CRC/ECC
 
 		self.samples30usec = 0	  # number of samples in 30 usec.
@@ -246,6 +249,7 @@ class Decoder(srd.Decoder):
 		self.dsply_pfx = True if self.options['dsply_pfx'] == 'yes' else False
 		self.dsply_sn = True if self.options['dsply_sn'] == 'yes' else False
 		self.header_crc_bytes = int(self.options['header_crc_bits']) / 8
+		self.header_bytes = int(self.options['header_bytes'])
 		self.data_crc_bytes = int(self.options['data_crc_bits']) / 8
 		self.crc16_poly = int(self.options['crc16_poly'], 16)
 		self.crc32_poly = int(self.options['crc32_poly'], 16)
@@ -534,7 +538,34 @@ class Decoder(srd.Decoder):
 	# ------------------------------------------------------------------------
 
 	def decode_id_rec(self, fld_code, val):
+		if self.header_bytes == 7:
+			self.decode_id_rec_7byte(fld_code, val)
+		else:
+			self.decode_id_rec_8byte(fld_code,val)
 
+	def decode_id_rec_7byte(self, fld_code, val):
+		if fld_code == 3:
+			msb = self.block_header_byte ^ 0xFE
+			self.IDcyl = val | (msb << 8)
+		elif fld_code == 2:
+			self.IDsid = val & 0x0F
+			self.IDlenc = 512
+			if val & 0xF0 == 0:
+				self.IDlenv = 128
+			elif val & 0xF0 == 0x10:
+				self.IDlenv = 256
+			elif val & 0xF0 == 0x20:
+				self.IDlenv = 512
+			elif val & 0xF0 == 0x30:
+				self.IDlenv = 1024
+			else:
+				self.IDlenv = 0
+			if self.IDlenv != self.sector_len:
+				self.IDlastAM = -1
+		elif fld_code == 1:
+			self.IDsec = val
+
+	def decode_id_rec_8byte(self, fld_code, val):
 		if fld_code == 4:
 			self.IDcyl = val
 		elif fld_code == 3:
@@ -762,14 +793,15 @@ class Decoder(srd.Decoder):
 				return -1
 
 		elif self.pb_state == 6:
-			if val == 0xFE:					 # FEh ID Address Mark
+			if ((self.header_bytes == 8) and (val == 0xFE)) or ((self.header_bytes == 7) and ((val & 0xFC) == 0xFC)):					 # FEh ID Address Mark
 				self.display_byte(val, False)
-				self.crc(0xFE)
+				self.crc(val)
+				self.block_header_byte = val;
 				self.display_field('i')
 				self.IDlastAM = self.field_start
 				self.IDcrc = 0
 				self.pb_state = 7
-				self.byte_cnt = 4
+				self.byte_cnt = self.header_bytes - 4
 			elif val >= 0xF8 and val <= 0xFB:   # F8h..FBh Data Address Mark
 				self.display_byte(val, False)
 				self.crc(val)
