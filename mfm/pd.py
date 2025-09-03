@@ -67,6 +67,8 @@ class Decoder(srd.Decoder):
 	tags = ['Disk', 'PC']
 	channels = (
 		{'id': 'data', 'type': 0, 'name': 'Read data', 'desc': 'channel 0', 'idn':'dec_mfm_chan_data'},
+	)
+	optional_channels = (
 		{'id': 'extra', 'type': 107, 'name': 'Extra pulses', 'desc': 'channel 1', 'idn':'dec_mfm_chan_extra'},
 		{'id': 'suppress', 'type': 107, 'name': 'Suppress pulses', 'desc': 'channel 2', 'idn':'dec_mfm_chan_suppress'},
 	)
@@ -116,6 +118,8 @@ class Decoder(srd.Decoder):
 			'default': '16', 'values': ('16', '32')},
 		{'id': 'data_crc_bits', 'desc': 'Data field CRC bits',
 			'default': '32', 'values': ('16', '32', '56')},
+		{'id': 'crc16_poly', 'desc': 'CRC16 Polynomial',
+			'default': '1021'},
 		{'id': 'crc32_poly', 'desc': 'CRC32 Polynomial',
 			'default': '00A00805'},
 		{'id': 'dsply_pfx', 'desc': 'Display all MFM prefix bytes',
@@ -184,15 +188,7 @@ class Decoder(srd.Decoder):
 
 		self.report_displayed = False  # True = summary report already displayed, False = not displayed yet
 
-		# 16-bit CRC-CCITT CRC accumulator and lookup table.
-
-		self.crc_accum = 0
-
-		self.crc_tab = array('I', [0x0000, 0x1021, 0x2042, 0x3063,
-								   0x4084, 0x50A5, 0x60C6, 0x70E7,
-								   0x8108, 0x9129, 0xA14A, 0xB16B,
-								   0xC18C, 0xD1AD, 0xE1CE, 0xF1EF])
-
+		self.crc16_accum = 0
 		self.crc32_accum = 0
 		self.crc56_accum = 0
 
@@ -264,6 +260,7 @@ class Decoder(srd.Decoder):
 		self.write_data = True if self.options['write_data'] == 'yes' else False
 		self.header_crc_bytes = int(self.options['header_crc_bits']) / 8
 		self.data_crc_bytes = int(self.options['data_crc_bits']) / 8
+		self.crc16_poly = int(self.options['crc16_poly'], 16)
 		self.crc32_poly = int(self.options['crc32_poly'], 16)
 
 		# Calculate number of samples in 30 usec.
@@ -315,7 +312,7 @@ class Decoder(srd.Decoder):
 	# ------------------------------------------------------------------------
 	
 	def iniz_crc(self):
-		self.crc_accum = 0xFFFF
+		self.crc16_accum = 0xFFFF
 		self.crc32_accum = 0xFFFFFFFF
 		self.crc56_accum = 0xFFFFFFFFFFFFFF
 
@@ -326,12 +323,14 @@ class Decoder(srd.Decoder):
 	#  - The CRC-CCITT polynomial is x16 + x12 + x5 + 1.
 	# IN: byte  00h..FFh
 	# ------------------------------------------------------------------------
-	
-	def update_crc(self, byte):
-		self.crc_accum = (self.crc_tab[((self.crc_accum >> 12) ^ (byte >>   4)) & 0x0F]
-						  ^ (self.crc_accum << 4)) & 0xFFFF
-		self.crc_accum = (self.crc_tab[((self.crc_accum >> 12) ^ (byte & 0x0F)) & 0x0F]
-						  ^ (self.crc_accum << 4)) & 0xFFFF
+
+	def update_crc16(self, byte):
+		self.crc16_accum = (self.crc16_accum ^ (byte << 8)) & 0xFFFF
+		for i in range(8):
+			if (self.crc16_accum & 0x8000) == 0x8000:
+				self.crc16_accum = ((self.crc16_accum << 1) ^ self.crc16_poly) & 0xFFFF
+			else:
+				self.crc16_accum = (self.crc16_accum << 1) & 0xFFFF
 
 	# ------------------------------------------------------------------------
 	# PURPOSE: Update the 32-bit CRC accumulator with one data byte.
@@ -505,7 +504,7 @@ class Decoder(srd.Decoder):
 		self.byte_end = bit_end
 
 	def crc(self, val):
-		self.update_crc(val)   
+		self.update_crc16(val)   
 		self.update_crc32(val) 
 		self.update_crc56(val) 
 
@@ -568,7 +567,7 @@ class Decoder(srd.Decoder):
 			self.err_print('CRC error', self.field_start)
 			self.put(self.byte_end - 1, self.byte_end, self.out_ann, [15, ['Err']])
 			self.put(self.field_start, self.byte_end, self.out_ann,
-					 [9, ['CRC error %02X' % self.crc_accum or self.crc32_accum or self.crc56_accum, 'CRC error', 'CRC', 'C']])
+					 [9, ['CRC error %02X' % self.crc16_accum or self.crc32_accum or self.crc56_accum, 'CRC error', 'CRC', 'C']])
 		elif typ == 'c':
 			self.put(self.field_start, self.byte_end, self.out_ann,
 					 [10, ['CRC OK', 'CRC', 'C']])
@@ -690,7 +689,7 @@ class Decoder(srd.Decoder):
 			self.IDcrc += val
 			self.byte_cnt -= 1
 			if self.byte_cnt == 0:
-				if self.crc_accum == 0:
+				if self.crc16_accum == 0:
 					self.CRC_OK += 1
 					self.display_field('c')
 				else:
@@ -706,7 +705,7 @@ class Decoder(srd.Decoder):
 			self.DRcrc += val
 			self.byte_cnt -= 1
 			if self.byte_cnt == 0:
-				if self.crc_accum == 0:
+				if self.crc16_accum == 0:
 					self.DRcrcok = True
 					self.CRC_OK += 1
 					self.display_field('c')
@@ -870,7 +869,7 @@ class Decoder(srd.Decoder):
 			self.IDcrc += val
 			self.byte_cnt -= 1
 			if self.byte_cnt == 0:
-				if self.crc_accum == 0:
+				if self.crc16_accum == 0:
 					self.CRC_OK += 1
 					self.display_field('c')
 				else:
@@ -887,7 +886,7 @@ class Decoder(srd.Decoder):
 			self.byte_cnt -= 1
 			if self.byte_cnt == 0:
 				if self.data_crc_bytes == 2:
-					if self.crc_accum == 0:
+					if self.crc16_accum == 0:
 						self.DRcrcok = True
 						self.CRC_OK += 1
 						self.display_field('c')
